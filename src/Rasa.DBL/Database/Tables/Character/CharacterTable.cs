@@ -31,10 +31,10 @@ namespace Rasa.Database.Tables.Character
             CreateCharacterCommand.Parameters.Add("@Mind", MySqlDbType.UInt32);
             CreateCharacterCommand.Parameters.Add("@Spirit", MySqlDbType.UInt32);
             CreateCharacterCommand.Parameters.Add("@MapContextId", MySqlDbType.UInt32);
-            CreateCharacterCommand.Parameters.Add("@CoordX", MySqlDbType.Double);
-            CreateCharacterCommand.Parameters.Add("@CoordY", MySqlDbType.Double);
-            CreateCharacterCommand.Parameters.Add("@CoordZ", MySqlDbType.Double);
-            CreateCharacterCommand.Parameters.Add("@Rotation", MySqlDbType.Double);
+            CreateCharacterCommand.Parameters.Add("@CoordX", MySqlDbType.Float);
+            CreateCharacterCommand.Parameters.Add("@CoordY", MySqlDbType.Float);
+            CreateCharacterCommand.Parameters.Add("@CoordZ", MySqlDbType.Float);
+            CreateCharacterCommand.Parameters.Add("@Rotation", MySqlDbType.Float);
             CreateCharacterCommand.Prepare();
 
             ListCharactersCommand.Connection = GameDatabaseAccess.CharConnection;

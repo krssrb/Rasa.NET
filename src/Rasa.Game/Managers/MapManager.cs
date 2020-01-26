@@ -47,7 +47,7 @@ namespace Rasa.Managers
             };
 
             client.CallMethod(SysEntity.ClientMethodId, new CreatePhysicalEntityPacket(10001, (EntityClass)player.Gender == 0 ? (EntityClass)692 : (EntityClass)691));
-            client.CallMethod(10001, new WorldLocationDescriptorPacket(new Vector3((float)player.CoordX, (float)player.CoordY, (float)player.CoordZ), (float)player.Rotation));
+            client.CallMethod(10001, new WorldLocationDescriptorPacket(new Vector3(player.CoordX, player.CoordY, player.CoordZ), player.Rotation));
             client.CallMethod(SysEntity.ClientMethodId, new SetCurrentContextIdPacket(map.MapInfo.ContextId));
             client.CallMethod(SysEntity.ClientMethodId, new SetControlledActorIdPacket(10001));
 
@@ -67,8 +67,8 @@ namespace Rasa.Managers
                    map.MapInfo.ContextId,
                    map.InstanceId,
                    map.MapInfo.Version,
-                   new Vector3((float)client.MapClient.Player.CoordX, (float)client.MapClient.Player.CoordY, (float)client.MapClient.Player.CoordZ),
-                   (float)client.MapClient.Player.Rotation
+                   new Vector3(client.MapClient.Player.CoordX, client.MapClient.Player.CoordY, client.MapClient.Player.CoordZ),
+                   client.MapClient.Player.Rotation
                ));
 
             client.State = ClientState.Loading;

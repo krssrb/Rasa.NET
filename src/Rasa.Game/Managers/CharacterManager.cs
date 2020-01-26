@@ -130,10 +130,10 @@
                     Mind = 0,
                     Spirit = 0,
                     ContextId = 1220,
-                    CoordX = 894.9d,
-                    CoordY = 307.9d,
-                    CoordZ = 347.1d,
-                    Rotation = 0,
+                    CoordX = 894.9f,
+                    CoordY = 307.9f,
+                    CoordZ = 347.1f,
+                    Rotation = 0.0f,
                 };
 
                 if (!CharacterTable.CreateCharacter(entry))
