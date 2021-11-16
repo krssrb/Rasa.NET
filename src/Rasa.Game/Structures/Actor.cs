@@ -2,11 +2,12 @@
 
 namespace Rasa.Structures
 {
-    using Positioning;
-
-    public class Actor : Entity, IHasPosition
+    public class Actor : Entity
     {
         public Vector3 Position { get; set; }
+
         public double Rotation { get; set; }
+        
+        public bool IsCrouching { get; set; }
     }
 }

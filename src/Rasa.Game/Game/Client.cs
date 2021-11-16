@@ -1,6 +1,9 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Net.Sockets;
+using System.Text;
 
 namespace Rasa.Game
 {
@@ -34,9 +37,11 @@ namespace Rasa.Game
         public uint[] SendSequence { get; } = new uint[256];
         public uint[] ReceiveSequence { get; } = new uint[256];
 
-        private readonly object _clientLock = new object();
+        private readonly object _clientLock = new();
         private readonly ClientPacketHandler _handler;
-        private readonly PacketQueue _packetQueue = new PacketQueue();
+        private readonly PacketQueue _packetQueue = new();
+        private readonly NonContiguousMemoryStream _incomingDataQueue = new();
+
 
         private static PacketRouter<ClientPacketHandler, GameOpcode> PacketRouter { get; } = new PacketRouter<ClientPacketHandler, GameOpcode>();
 
@@ -80,10 +85,19 @@ namespace Rasa.Game
 
         public void Update(long delta)
         {
-            IBasePacket packet;
+            foreach (var protocolPacket in DecodeIncomingPackets())
+            {
+                try
+                {
+                    HandleProtocolPacket(protocolPacket);
+                }
+                catch (InvalidClientMessageException)
+                {
+                    Close();
+                }
+            }
 
-            while ((packet = _packetQueue.PopIncoming()) != null)
-                HandlePacket(packet);
+            IBasePacket packet;
 
             while ((packet = _packetQueue.PopOutgoing()) != null)
                 SendPacket(packet);
@@ -106,6 +120,8 @@ namespace Rasa.Game
                 Socket.Close();
 
                 Server.Disconnect(this);
+
+                SaveCharacter();
             }
         }
 
@@ -144,21 +160,12 @@ namespace Rasa.Game
             Socket.Send(pPacket);
         }
 
-        public void HandlePacket(IBasePacket packet)
+        private void HandleProtocolPacket(ProtocolPacket protocolPacket)
         {
-            var pPacket = packet as ProtocolPacket;
-            if (pPacket == null)
-                return;
-
-            switch (pPacket.Type)
+            switch (protocolPacket.Type)
             {
                 case ClientMessageOpcode.Login:
-                    var loginMsg = pPacket.Message as LoginMessage;
-                    if (loginMsg == null)
-                    {
-                        Close(true);
-                        return;
-                    }
+                    var loginMsg = GetMessageAs<LoginMessage>(protocolPacket);
 
                     if (loginMsg.Version.Length != 8 || loginMsg.Version != "1.16.5.0")
                     {
@@ -169,6 +176,7 @@ namespace Rasa.Game
                             ErrorCode = LoginErrorCodes.VersionMismatch,
                             Subtype = LoginResponseMessageSubtype.Failed
                         }, delay: false);
+
                         return;
                     }
 
@@ -217,8 +225,8 @@ namespace Rasa.Game
                         }
 
                         LoadGameAccountEntry(unitOfWork, loginEntry.Id);
-                        unitOfWork.GameAccounts.UpdateLoginData(loginEntry.Id, Socket.RemoteAddress);
 
+                        unitOfWork.GameAccounts.UpdateLoginData(loginEntry.Id, Socket.RemoteAddress);
                         unitOfWork.Complete();
                     }
 
@@ -231,18 +239,26 @@ namespace Rasa.Game
                     State = ClientState.LoggedIn;
 
                     _characterManager.StartCharacterSelection(this);
-                    return;
+                    break;
 
                 case ClientMessageOpcode.Move:
+                    if (Player == null)
+                    {
+                        return;
+                    }
+
+                    var moveMessage = GetMessageAs<MoveMessage>(protocolPacket);
+                    if (moveMessage.Movement == null)
+                    {
+                        return;
+                    }
+
+                    Player.Position = moveMessage.Movement.Position;
+                    Player.Rotation = moveMessage.Movement.ViewDirection.X;
                     break;
 
                 case ClientMessageOpcode.CallServerMethod:
-                    var csmPacket = pPacket.Message as CallServerMethodMessage;
-                    if (csmPacket == null)
-                    {
-                        Close(true);
-                        return;
-                    }
+                    var csmPacket = GetMessageAs<CallServerMethodMessage>(protocolPacket);
 
                     if (!csmPacket.ReadPacket())
                     {
@@ -254,17 +270,21 @@ namespace Rasa.Game
                     break;
 
                 case ClientMessageOpcode.Ping:
-                    var pingMessage = pPacket.Message as PingMessage;
-                    if (pingMessage == null)
-                    {
-                        Close(true);
-                        return;
-                    }
+                    var pingMessage = GetMessageAs<PingMessage>(protocolPacket);
 
                     SendMessage(pingMessage, delay: false);
                     break;
             }
+        }
 
+        private T GetMessageAs<T>(ProtocolPacket protocolPacket)
+            where T : class, IClientMessage
+        {
+            if (protocolPacket.Message is T message)
+            {
+                return message;
+            }
+            throw new InvalidClientMessageException();
         }
 
         public bool IsAuthenticated()
@@ -311,115 +331,95 @@ namespace Rasa.Game
         {
             Close(false);
         }
-
+		
         private void OnReceive(BufferData data)
         {
-            do
-            {
-                if (data.RemainingLength == 0)
-                    break;
-
-                var startOffset = data.Offset;
-
-                if (!DecodePacket(data, out ushort subsize))
-                    return;
-
-                if (data.Offset == startOffset + subsize)
-                    continue;
-
-                if (data.Offset < startOffset + subsize)
-                    throw new Exception("ProtocolPacket underread!");
-
-                if (data.Offset > startOffset + subsize)
-                    throw new Exception("ProtocolPacket overread!");
-            }
-            while (true);
+            _incomingDataQueue.CopyFromArray(data.Buffer, data.BaseOffset + data.Offset, data.RemainingLength);
         }
 
-        private bool DecodePacket(BufferData data, out ushort length)
+        private IEnumerable<ProtocolPacket> DecodeIncomingPackets()
         {
-            using (var br = data.GetReader(data.Offset, data.RemainingLength))
+            ProtocolPacket packet;
+
+            while ((packet = DecodeNextPacket()) != null)
+                yield return packet;
+
+            yield break;
+        }
+
+        private ProtocolPacket DecodeNextPacket()
+        {
+            // If there is not enough data to read the packet size at all, then stop processing
+            if (_incomingDataQueue.Length < 2)
+                return null;
+
+            using var br = new BinaryReader(_incomingDataQueue, Encoding.UTF8, true);
+
+            // Peek the packet size to determine if the whole packet has arrived
+            var startPosition = _incomingDataQueue.Position;
+
+            // Read the size of the next packet
+            var packetSize = br.ReadUInt16();
+
+            // Rewind the stream to the starting position
+            _incomingDataQueue.Position = startPosition;
+
+            // If the packet is fragmented and not all the fragments has arrived yet, then stop processing
+            if (packetSize > _incomingDataQueue.Length)
+                return null;
+
+            // Construct and the packet
+            var rawPacket = new ProtocolPacket();
+
+            rawPacket.Read(br);
+
+            // Check for overreading or underreading the packet
+            if (_incomingDataQueue.Position != startPosition + packetSize)
+                throw new Exception($"ProtocolPacket over or under read! Start position: {startPosition} | Packet size: {packetSize} | End position: {_incomingDataQueue.Position}!");
+
+            // Advance the stream by removing the already processed data
+            _incomingDataQueue.RemoveBytes(packetSize);
+
+            // Throw away any packet that came out of order, if it came on a channel
+            if (rawPacket.Channel != 0)
             {
-                var rawPacket = new ProtocolPacket();
-
-                rawPacket.Read(br);
-
-                if (rawPacket.Channel != 0)
+                // If an out of sequence packet arrived, then throw it away
+                if (rawPacket.SequenceNumber < ReceiveSequence[rawPacket.Channel])
                 {
-                    if (rawPacket.SequenceNumber < ReceiveSequence[rawPacket.Channel])
-                    {
-                        Debugger.Break();
+                    Debugger.Break(); // todo: test and remove later
 
-                        length = rawPacket.Size; // throw away the packet
-                        return true;
-                    }
-
-                    ReceiveSequence[rawPacket.Channel] = rawPacket.SequenceNumber;
+                    return null;
                 }
 
-                length = rawPacket.Size;
-
-                data.Offset += (int) br.BaseStream.Position;
-
-                if (rawPacket.Type == ClientMessageOpcode.None)
-                {
-                    if (length != 4)
-                        Debugger.Break(); // If it's not send timeout check, let's investigate...
-
-                    return true;
-                }
-
-                _packetQueue.EnqueueIncoming(rawPacket);
+                // Update the receive sequence for the channel
+                ReceiveSequence[rawPacket.Channel] = rawPacket.SequenceNumber;
             }
-            /*var packet = new PythonCallPacket(length);
-            using (var br = data.GetReader())
+
+            // Some internal send timeout check, skip the packet
+            if (rawPacket.Type == ClientMessageOpcode.None)
             {
-                packet.Read(br);
+                if (rawPacket.Size != 4)
+                    Debugger.Break(); // If it's not send timeout check, let's investigate...
 
-                if (packet.Return.HasValue)
-                    return packet.Return.Value;
-
-                if (packet.Type == 2)
-                {
-                    State = ClientState.LoggedIn;
-                    Entry = Server.AuthenticateClient(this, packet.AccountId, packet.OneTimeKey);
-                    if (Entry == null)
-                    {
-                        Logger.WriteLog(LogType.Error, "Client with ip: {0} tried to log in with invalid session data! User Id: {1} | OneTimeKey: {2}", Socket.RemoteAddress, packet.AccountId, packet.OneTimeKey);
-                        Close(false);
-                        return false;
-                    }
-
-                    CharacterManager.Instance.StartCharacterSelection(this);
-                    return true;
-                }
-
-                if (packet.DataSize > 0 && br.BaseStream.Position + packet.DataSize < br.BaseStream.Length)
-                {
-                    if (br.ReadByte() != 0x4F) // 'O' format
-                        throw new Exception("Unsupported serialization format!");
-
-                    var packetType = PacketRouter.GetPacketType(packet.Opcode);
-                    if (packetType != null)
-                    {
-                        var pythonPacket = Activator.CreateInstance(packetType) as IBasePacket;
-                        if (pythonPacket == null)
-                            return false;
-
-                        pythonPacket.Read(br);
-
-                        Server.PacketQueue.EnqueueIncoming(this, pythonPacket);
-                    }
-                    else
-                        Logger.WriteLog(LogType.Error, $"Unhandled game opcode: {packet.Opcode}");
-                }
-                else
-                    Logger.WriteLog(LogType.Error, $"Invalid data found in Python method call! Off: {br.BaseStream.Position} | Len: {packet.DataSize} | Array len: {br.BaseStream.Length}");
-            }*/
-
-            return true;
+                return null;
+            }
+            
+            return rawPacket;
         }
         #endregion
+
+        public void SaveCharacter()
+        {
+            var player = Player;
+            if (player == null)
+            {
+                return;
+            }
+
+            using var unitOfWork = _gameUnitOfWorkFactory.CreateChar();
+            unitOfWork.Characters.SaveCharacter(player);
+            unitOfWork.Complete();
+        }
 
         public void ReloadGameAccountEntry()
         {
