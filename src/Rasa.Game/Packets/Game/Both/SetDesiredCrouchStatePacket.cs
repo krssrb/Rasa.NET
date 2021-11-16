@@ -17,7 +17,7 @@ namespace Rasa.Packets.Game.Both
 
         public SetDesiredCrouchStatePacket(CharacterState desiredCrouchState)
         {
-            if (desiredCrouchState != CharacterState.Standing || desiredCrouchState != CharacterState.Crouched)
+            if (!(desiredCrouchState != CharacterState.Standing || desiredCrouchState != CharacterState.Crouched))
                 throw new ArgumentOutOfRangeException(nameof(desiredCrouchState));
 
             DesiredCrouchState = desiredCrouchState;
