@@ -17,9 +17,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Update="appsettings.env.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

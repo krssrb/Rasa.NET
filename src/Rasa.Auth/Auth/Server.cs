@@ -14,8 +14,8 @@ namespace Rasa.Auth
     using Hosting;
     using Memory;
     using Networking;
-    using Packets.Auth.Server;
     using Packets.Communicator;
+    using Packets.Auth.Server;
     using Repositories.UnitOfWork;
     using Structures;
     using Threading;
